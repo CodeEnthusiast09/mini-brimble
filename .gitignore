@@ -1,0 +1,14 @@
+# Binary
+server/bin/
+
+# Environment
+.env
+*.env
+
+# OS
+.DS_Store
+
+# Go
+*.exe
+*.test
+*.out
