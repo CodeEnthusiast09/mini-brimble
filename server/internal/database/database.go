@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/CodeEnthusiast09/mini-brimble/internal/config"
-	"github.com/CodeEnthusiast09/mini-brimble/internal/models"
+	"github.com/CodeEnthusiast09/mini-brimble/server/internal/config"
+	"github.com/CodeEnthusiast09/mini-brimble/server/internal/models"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
