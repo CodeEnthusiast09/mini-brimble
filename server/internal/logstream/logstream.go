@@ -1,33 +1,42 @@
 package logstream
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
+
+type Event struct {
+	ID        string    `json:"id"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
+}
 
 type Hub struct {
 	mu      sync.RWMutex
-	streams map[string]map[chan string]struct{}
+	streams map[string]map[chan Event]struct{}
 }
 
 func NewHub() *Hub {
 	return &Hub{
-		streams: make(map[string]map[chan string]struct{}),
+		streams: make(map[string]map[chan Event]struct{}),
 	}
 }
 
-func (h *Hub) Subscribe(deploymentID string) chan string {
-	ch := make(chan string, 32)
+func (h *Hub) Subscribe(deploymentID string) chan Event {
+	ch := make(chan Event, 32)
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	if h.streams[deploymentID] == nil {
-		h.streams[deploymentID] = make(map[chan string]struct{})
+		h.streams[deploymentID] = make(map[chan Event]struct{})
 	}
 
 	h.streams[deploymentID][ch] = struct{}{}
 	return ch
 }
 
-func (h *Hub) Unsubscribe(deploymentID string, ch chan string) {
+func (h *Hub) Unsubscribe(deploymentID string, ch chan Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -48,10 +57,10 @@ func (h *Hub) Unsubscribe(deploymentID string, ch chan string) {
 	}
 }
 
-func (h *Hub) Broadcast(deploymentID string, message string) {
+func (h *Hub) Broadcast(deploymentID string, event Event) {
 	h.mu.RLock()
 	subscribers := h.streams[deploymentID]
-	channels := make([]chan string, 0, len(subscribers))
+	channels := make([]chan Event, 0, len(subscribers))
 	for ch := range subscribers {
 		channels = append(channels, ch)
 	}
@@ -59,7 +68,7 @@ func (h *Hub) Broadcast(deploymentID string, message string) {
 
 	for _, ch := range channels {
 		select {
-		case ch <- message:
+		case ch <- event:
 		default:
 		}
 	}

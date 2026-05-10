@@ -38,6 +38,9 @@ export function DeploymentCard({ deployment, isSelected, onSelect }: Props) {
     mutationFn: () => deleteDeployment(deployment.id),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: ["deployments"] }),
+    onError: (err: Error) => {
+      window.alert(`Failed to stop deployment: ${err.message}`);
+    },
   });
 
   const handleCopy = (e: React.MouseEvent) => {

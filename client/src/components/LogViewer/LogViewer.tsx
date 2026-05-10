@@ -1,12 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getLogs, getLogStreamUrl } from "../../api/logs";
-import type { Deployment } from "../../types";
+import type { Deployment, LogEntry } from "../../types";
 import { parseGitHubRepo } from "../../lib/utils";
 
 const TERMINAL_STATUSES = new Set<string>(["running", "failed"]);
 
 type Tab = "build" | "runtime";
+
+type LogEvent = {
+  id: string;
+  message: string;
+  created_at: string;
+};
 
 type Props = {
   deployment: Deployment;
@@ -26,7 +32,7 @@ function getLineClass(line: string): string {
 
 export function LogViewer({ deployment }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [streamedLogs, setStreamedLogs] = useState<string[]>([]);
+  const [streamedLogs, setStreamedLogs] = useState<LogEvent[]>([]);
   const [activeTab, setActiveTab] = useState<Tab>("build");
   const parsed = parseGitHubRepo(deployment.github_url);
 
@@ -55,7 +61,12 @@ export function LogViewer({ deployment }: Props) {
     const es = new EventSource(getLogStreamUrl(deployment.id));
 
     es.addEventListener("log", (e: MessageEvent) => {
-      setStreamedLogs((prev) => [...prev, String(e.data)]);
+      try {
+        const parsed = JSON.parse(String(e.data)) as LogEvent;
+        setStreamedLogs((prev) => [...prev, parsed]);
+      } catch {
+        // ignore malformed payloads
+      }
     });
 
     es.onerror = () => es.close();
@@ -70,8 +81,27 @@ export function LogViewer({ deployment }: Props) {
     }
   }, [existingLogs, streamedLogs, activeTab]);
 
-  const existingMessages = existingLogs?.map((l) => l.message) ?? [];
-  const allLogs = [...existingMessages, ...streamedLogs];
+  const allLogs = useMemo(() => {
+    const seen = new Set<string>();
+    const merged: { id: string; message: string }[] = [];
+
+    for (const entry of existingLogs ?? ([] as LogEntry[])) {
+      if (!seen.has(entry.id)) {
+        seen.add(entry.id);
+        merged.push({ id: entry.id, message: entry.message });
+      }
+    }
+
+    for (const entry of streamedLogs) {
+      if (!seen.has(entry.id)) {
+        seen.add(entry.id);
+        merged.push({ id: entry.id, message: entry.message });
+      }
+    }
+
+    return merged;
+  }, [existingLogs, streamedLogs]);
+
   const isStreaming = !TERMINAL_STATUSES.has(deployment.status);
 
   return (
@@ -131,18 +161,18 @@ export function LogViewer({ deployment }: Props) {
         ) : allLogs.length === 0 ? (
           <span className="text-gray-700">Waiting for logs…</span>
         ) : (
-          allLogs.map((msg, i) => (
+          allLogs.map((entry, i) => (
             <div
-              key={i}
+              key={entry.id}
               className="flex gap-4 hover:bg-white/2 px-1 -mx-1 rounded"
             >
               <span className="shrink-0 w-6 text-right text-gray-700 select-none">
                 {i + 1}
               </span>
               <span
-                className={`whitespace-pre-wrap break-all ${getLineClass(msg)}`}
+                className={`whitespace-pre-wrap break-all ${getLineClass(entry.message)}`}
               >
-                {msg}
+                {entry.message}
               </span>
             </div>
           ))

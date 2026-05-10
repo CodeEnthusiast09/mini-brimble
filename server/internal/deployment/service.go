@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/CodeEnthusiast09/mini-brimble/server/internal/caddy"
 	"github.com/CodeEnthusiast09/mini-brimble/server/internal/deploymentstore"
@@ -17,6 +19,13 @@ import (
 	"github.com/CodeEnthusiast09/mini-brimble/server/internal/railpack"
 )
 
+const defaultContainerPort = 8080
+
+type runHandle struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
 type Service struct {
 	deployments      *deploymentstore.Store
 	logs             *logstore.Store
@@ -26,6 +35,9 @@ type Service struct {
 	workspaceRoot    string
 	publicBaseDomain string
 	upstreamHost     string
+
+	runsMu sync.Mutex
+	runs   map[string]*runHandle
 }
 
 func NewService(
@@ -57,6 +69,7 @@ func NewService(
 		workspaceRoot:    workspaceRoot,
 		publicBaseDomain: strings.TrimSpace(publicBaseDomain),
 		upstreamHost:     strings.TrimSpace(upstreamHost),
+		runs:             make(map[string]*runHandle),
 	}
 }
 
@@ -72,14 +85,29 @@ func (s *Service) Deploy(ctx context.Context, githubURL string) (*models.Deploym
 
 	s.emitLog(ctx, deployment.ID, "deployment created")
 
-	asyncCtx := context.WithoutCancel(ctx)
+	asyncCtx, cancel := context.WithCancel(context.Background())
+	handle := &runHandle{cancel: cancel, done: make(chan struct{})}
+
+	s.runsMu.Lock()
+	s.runs[deployment.ID] = handle
+	s.runsMu.Unlock()
+
 	deploymentCopy := *deployment
-	go s.runDeploy(asyncCtx, &deploymentCopy)
+	go s.runDeploy(asyncCtx, &deploymentCopy, handle)
 
 	return deployment, nil
 }
 
-func (s *Service) runDeploy(ctx context.Context, deployment *models.Deployment) {
+func (s *Service) runDeploy(ctx context.Context, deployment *models.Deployment, handle *runHandle) {
+	defer func() {
+		close(handle.done)
+		s.runsMu.Lock()
+		if current, ok := s.runs[deployment.ID]; ok && current == handle {
+			delete(s.runs, deployment.ID)
+		}
+		s.runsMu.Unlock()
+	}()
+
 	logWriter := newLogWriter(ctx, s, deployment.ID)
 
 	workDir, workspaceErr := os.MkdirTemp(s.workspaceRoot, "deployment-"+deployment.ID+"-")
@@ -114,10 +142,24 @@ func (s *Service) runDeploy(ctx context.Context, deployment *models.Deployment) 
 	buildErr := railpack.Build(ctx, projectDir, imageName, logWriter)
 	if buildErr != nil {
 		logWriter.Flush()
+		if ctx.Err() != nil {
+			s.emitLog(ctx, deployment.ID, "build canceled")
+			return
+		}
 		s.failDeployment(ctx, deployment, fmt.Sprintf("build image: %v", buildErr))
 		return
 	}
 	logWriter.Flush()
+
+	if ctx.Err() != nil {
+		s.emitLog(ctx, deployment.ID, "deployment canceled after build")
+		return
+	}
+
+	containerPortNum, inspectErr := s.docker.InspectExposedPort(ctx, imageName)
+	if inspectErr != nil || containerPortNum == 0 {
+		containerPortNum = defaultContainerPort
+	}
 
 	hostPort, portErr := s.docker.GetFreePort()
 	if portErr != nil {
@@ -134,8 +176,8 @@ func (s *Service) runDeploy(ctx context.Context, deployment *models.Deployment) 
 		return
 	}
 
-	s.emitLog(ctx, deployment.ID, fmt.Sprintf("starting container on port %d", hostPort))
-	containerID, runErr := s.docker.RunContainer(ctx, imageName, hostPort)
+	s.emitLog(ctx, deployment.ID, fmt.Sprintf("starting container (host:%d → container:%d)", hostPort, containerPortNum))
+	containerID, runErr := s.docker.RunContainer(ctx, imageName, hostPort, containerPortNum)
 	if runErr != nil {
 		s.failDeployment(ctx, deployment, fmt.Sprintf("run container: %v", runErr))
 		return
@@ -169,6 +211,8 @@ func (s *Service) runDeploy(ctx context.Context, deployment *models.Deployment) 
 }
 
 func (s *Service) Stop(ctx context.Context, deploymentID string) error {
+	s.cancelRun(deploymentID)
+
 	deployment, loadErr := s.deployments.GetByID(ctx, deploymentID)
 	if loadErr != nil {
 		return fmt.Errorf("load deployment: %w", loadErr)
@@ -177,25 +221,21 @@ func (s *Service) Stop(ctx context.Context, deploymentID string) error {
 	s.emitLog(ctx, deployment.ID, "stopping deployment")
 
 	if host := hostFromURL(deployment.LiveURL); host != "" {
-		removeRouteErr := s.caddy.RemoveRoute(ctx, host)
-		if removeRouteErr != nil {
-			return fmt.Errorf("remove caddy route: %w", removeRouteErr)
+		if removeRouteErr := s.caddy.RemoveRoute(ctx, host); removeRouteErr != nil {
+			s.emitLog(ctx, deployment.ID, fmt.Sprintf("remove caddy route: %v", removeRouteErr))
 		}
 	}
 
 	if deployment.ContainerID != "" {
-		stopErr := s.docker.StopContainer(ctx, deployment.ContainerID)
-		if stopErr != nil {
-			return fmt.Errorf("stop container: %w", stopErr)
+		if stopErr := s.docker.StopContainer(ctx, deployment.ContainerID); stopErr != nil {
+			s.emitLog(ctx, deployment.ID, fmt.Sprintf("stop container: %v", stopErr))
 		}
-		removeContainerErr := s.docker.RemoveContainer(ctx, deployment.ContainerID)
-		if removeContainerErr != nil {
-			return fmt.Errorf("remove container: %w", removeContainerErr)
+		if removeContainerErr := s.docker.RemoveContainer(ctx, deployment.ContainerID); removeContainerErr != nil {
+			s.emitLog(ctx, deployment.ID, fmt.Sprintf("remove container: %v", removeContainerErr))
 		}
 	}
 
-	deleteErr := s.deployments.Delete(ctx, deploymentID)
-	if deleteErr != nil {
+	if deleteErr := s.deployments.Delete(ctx, deploymentID); deleteErr != nil {
 		return fmt.Errorf("delete deployment record: %w", deleteErr)
 	}
 
@@ -213,8 +253,15 @@ func cloneRepo(ctx context.Context, repoURL string, destDir string, output *logW
 }
 
 func (s *Service) emitLog(ctx context.Context, deploymentID string, message string) {
-	_ = s.logs.Save(ctx, deploymentID, message)
-	s.streams.Broadcast(deploymentID, message)
+	entry, err := s.logs.Save(ctx, deploymentID, message)
+	if err != nil || entry == nil {
+		return
+	}
+	s.streams.Broadcast(deploymentID, logstream.Event{
+		ID:        entry.ID,
+		Message:   entry.Message,
+		CreatedAt: entry.CreatedAt,
+	})
 }
 
 func (s *Service) failDeployment(ctx context.Context, deployment *models.Deployment, message string) {
@@ -230,6 +277,26 @@ func (s *Service) cleanupContainer(ctx context.Context, containerID string) {
 
 	_ = s.docker.StopContainer(ctx, containerID)
 	_ = s.docker.RemoveContainer(ctx, containerID)
+}
+
+func (s *Service) cancelRun(deploymentID string) {
+	s.runsMu.Lock()
+	handle, ok := s.runs[deploymentID]
+	if ok {
+		delete(s.runs, deploymentID)
+	}
+	s.runsMu.Unlock()
+
+	if !ok {
+		return
+	}
+
+	handle.cancel()
+
+	select {
+	case <-handle.done:
+	case <-time.After(5 * time.Second):
+	}
 }
 
 func (s *Service) cleanupRoute(ctx context.Context, host string) {

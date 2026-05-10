@@ -23,6 +23,9 @@ services:
     image: moby/buildkit
     container_name: buildkit
     privileged: true
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     volumes:
       - buildkit_socket:/run/buildkit
 

@@ -6,7 +6,10 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strconv"
+	"strings"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	dockerclient "github.com/moby/moby/client"
@@ -40,14 +43,17 @@ func (c *Client) GetFreePort() (int, error) {
 	return addr.Port, nil
 }
 
-func (c *Client) RunContainer(ctx context.Context, image string, hostPort int) (string, error) {
-	containerPort, err := network.ParsePort("8080/tcp")
+func (c *Client) RunContainer(ctx context.Context, image string, hostPort int, containerPortNum int) (string, error) {
+	containerPort, err := network.ParsePort(fmt.Sprintf("%d/tcp", containerPortNum))
 	if err != nil {
 		return "", fmt.Errorf("parse container port: %w", err)
 	}
 
 	resp, err := c.cli.ContainerCreate(ctx, dockerclient.ContainerCreateOptions{
-		Config: &container.Config{Image: image},
+		Config: &container.Config{
+			Image: image,
+			Env:   []string{fmt.Sprintf("PORT=%d", containerPortNum)},
+		},
 		HostConfig: &container.HostConfig{
 			PortBindings: network.PortMap{
 				containerPort: []network.PortBinding{
@@ -89,15 +95,45 @@ func (c *Client) StopContainer(ctx context.Context, containerID string) error {
 	timeout := 10
 	_, err := c.cli.ContainerStop(ctx, containerID, dockerclient.ContainerStopOptions{Timeout: &timeout})
 	if err != nil {
+		if cerrdefs.IsNotFound(err) {
+			return nil
+		}
 		return fmt.Errorf("stop container: %w", err)
 	}
 
 	return nil
 }
 
+func (c *Client) InspectExposedPort(ctx context.Context, image string) (int, error) {
+	inspect, err := c.cli.ImageInspect(ctx, image)
+	if err != nil {
+		return 0, fmt.Errorf("inspect image: %w", err)
+	}
+
+	if inspect.Config == nil {
+		return 0, nil
+	}
+
+	for portSpec := range inspect.Config.ExposedPorts {
+		portStr := portSpec
+		if idx := strings.Index(portStr, "/"); idx != -1 {
+			portStr = portStr[:idx]
+		}
+		port, parseErr := strconv.Atoi(portStr)
+		if parseErr == nil && port > 0 {
+			return port, nil
+		}
+	}
+
+	return 0, nil
+}
+
 func (c *Client) RemoveContainer(ctx context.Context, containerID string) error {
 	_, err := c.cli.ContainerRemove(ctx, containerID, dockerclient.ContainerRemoveOptions{Force: true})
 	if err != nil {
+		if cerrdefs.IsNotFound(err) {
+			return nil
+		}
 		return fmt.Errorf("remove container: %w", err)
 	}
 

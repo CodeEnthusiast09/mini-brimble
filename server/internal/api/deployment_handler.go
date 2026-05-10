@@ -171,12 +171,12 @@ func (h *DeploymentHandler) StreamLogs(c *gin.Context) {
 		select {
 		case <-c.Request.Context().Done():
 			return
-		case message, ok := <-stream:
-			if !ok {
+		case event, open := <-stream:
+			if !open {
 				return
 			}
 
-			c.SSEvent("log", message)
+			c.SSEvent("log", event)
 			flusher.Flush()
 		}
 	}

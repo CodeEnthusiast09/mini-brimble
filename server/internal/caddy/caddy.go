@@ -47,8 +47,8 @@ func (c *Caddy) AddRoute(ctx context.Context, host string, upstreamHost string, 
 
 	req, err := http.NewRequestWithContext(
 		ctx,
-		http.MethodPost,
-		c.endpoint("/config/apps/http/servers/"+defaultServerID+"/routes"),
+		http.MethodPut,
+		c.endpoint("/config/apps/http/servers/"+defaultServerID+"/routes/0"),
 		bytes.NewReader(body),
 	)
 	if err != nil {
