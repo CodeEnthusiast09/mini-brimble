@@ -1,0 +1,92 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-railpack}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-railpack}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  buildkit:
+    image: moby/buildkit
+    container_name: buildkit
+    privileged: true
+    volumes:
+      - buildkit_socket:/run/buildkit
+
+  caddy:
+    image: caddy:2-alpine
+    command:
+      [
+        "caddy",
+        "run",
+        "--config",
+        "/etc/caddy/Caddyfile",
+        "--adapter",
+        "caddyfile",
+      ]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "80:80"
+      - "2019:2019"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  server:
+    build:
+      context: ./server
+    depends_on:
+      db:
+        condition: service_healthy
+      buildkit:
+        condition: service_started
+      caddy:
+        condition: service_started
+    environment:
+      PORT: 8080
+      APP_BASE_URL: ${APP_BASE_URL:-localhost}
+      DEPLOYMENT_UPSTREAM_HOST: ${DEPLOYMENT_UPSTREAM_HOST:-host.docker.internal}
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      DB_NAME: ${POSTGRES_DB:-railpack}
+      DOCKER_SOCKET_PATH: /var/run/docker.sock
+      CADDY_HOST: caddy
+      CADDY_PORT: 2019
+      BUILDKIT_HOST: unix:///run/buildkit/buildkitd.sock
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - buildkit_socket:/run/buildkit
+
+  client:
+    build:
+      context: ./client
+    depends_on:
+      server:
+        condition: service_started
+    ports:
+      - "3000:80"
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+  buildkit_socket:

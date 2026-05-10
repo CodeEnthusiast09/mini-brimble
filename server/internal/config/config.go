@@ -6,10 +6,12 @@ import (
 )
 
 type Config struct {
-	Port         int
-	DBConfig     DBConfig
-	DockerConfig DockerConfig
-	CaddyConfig  CaddyConfig
+	Port                   int
+	AppBaseURL             string
+	DeploymentUpstreamHost string
+	DBConfig               DBConfig
+	DockerConfig           DockerConfig
+	CaddyConfig            CaddyConfig
 }
 
 type DBConfig struct {
@@ -31,7 +33,9 @@ type CaddyConfig struct {
 
 func Load() *Config {
 	return &Config{
-		Port: getEnvInt("PORT", 8080),
+		Port:                   getEnvInt("PORT", 8080),
+		AppBaseURL:             getEnv("APP_BASE_URL", "localhost"),
+		DeploymentUpstreamHost: getEnv("DEPLOYMENT_UPSTREAM_HOST", "127.0.0.1"),
 		DBConfig: DBConfig{
 			Host:     getEnv("DB_HOST", "localhost"),
 			Port:     getEnvInt("DB_PORT", 5432),
