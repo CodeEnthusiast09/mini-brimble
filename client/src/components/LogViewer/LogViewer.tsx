@@ -106,20 +106,10 @@ export function LogViewer({ deployment }: Props) {
 
   return (
     <div className="rounded-xl border border-white/7 overflow-hidden">
-      {/* Terminal titlebar */}
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/6 bg-[#111111]">
-        <div className="flex items-center gap-3">
-          <div className="flex gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-white/8" />
-            <span className="w-2.5 h-2.5 rounded-full bg-white/8" />
-            <span className="w-2.5 h-2.5 rounded-full bg-white/8" />
-          </div>
-          <span className="text-xs text-gray-500 font-mono">
-            {parsed
-              ? `${parsed.owner}/${parsed.repo}`
-              : deployment.id.slice(0, 8)}
-          </span>
-        </div>
+        <span className="text-xs text-gray-500 font-mono">
+          {parsed ? `${parsed.owner}/${parsed.repo}` : deployment.id.slice(0, 8)}
+        </span>
         {isStreaming ? (
           <span className="inline-flex items-center gap-1.5 text-xs text-yellow-400">
             <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" />
